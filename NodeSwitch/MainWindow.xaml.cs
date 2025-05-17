@@ -1,6 +1,5 @@
 ﻿using MicaWPF.Controls;
 using NodeSwitch.Services;
-using NodeSwitch.Services.NvmManagerApp.Services;
 using NodeSwitch.ViewModels;
 using System;
 using System.Collections.ObjectModel;

@@ -1,5 +1,5 @@
 ﻿using NodeSwitch.Models;
-using NodeSwitch.Services.NvmManagerApp.Services;
+using NvmManagerApp.Services;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
