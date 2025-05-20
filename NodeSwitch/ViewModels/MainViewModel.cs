@@ -1,4 +1,5 @@
 ﻿using NodeSwitch.Models;
+using NodeSwitch.Services;
 using NvmManagerApp.Services;
 using System;
 using System.Collections.Generic;
@@ -59,21 +60,34 @@ namespace NodeSwitch.ViewModels
             set { _isInstalling = value; OnPropertyChanged(nameof(IsInstalling)); }
         }
 
+        private bool _startWithWindows;
+
+        public bool StartWithWindows
+        {
+            get { return _startWithWindows; }
+            set { _startWithWindows = value; OnPropertyChanged(nameof(StartWithWindows)); }
+        }
+
+
         public ICommand InstallCommand { get; }
         public ICommand UseCommand { get; }
         public ICommand UninstallCommand { get; }
+        public ICommand StartupCommand { get; }
 
         public MainViewModel()
         {
             InstallCommand = new RelayCommand<string>(async (version) => await InstallVersionAsync(version), CanInstall);
             UseCommand = new RelayCommand<string>(UseVersion, CanUseVersion);
             UninstallCommand = new RelayCommand<string>((v) => UninstallVersion(v));
+            StartupCommand = new RelayCommand<bool>(SetStartupEnabled);
 
             FilteredInstalledVersions = CollectionViewSource.GetDefaultView(InstalledVersions);
             FilteredInstalledVersions.Filter = InstalledVersionsFilter;
 
             FilteredAvailableVersions = CollectionViewSource.GetDefaultView(AvailableVersions);
             FilteredAvailableVersions.Filter = AvailableVersionsFilter;
+
+            StartWithWindows = StartupService.IsStartupEnabled();
 
             InstalledSearchText = "";
             AvailableSearchText = "";
@@ -174,6 +188,12 @@ namespace NodeSwitch.ViewModels
         {
             NvmService.UninstallNodeVersion(version);
             LoadData();
+        }
+
+        private void SetStartupEnabled(bool enabled)
+        {
+            StartupService.SetStartupEnabled(enabled);
+            StartWithWindows = enabled;
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

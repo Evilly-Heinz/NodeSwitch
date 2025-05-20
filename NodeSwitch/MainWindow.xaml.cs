@@ -1,4 +1,5 @@
 ﻿using MicaWPF.Controls;
+using MicaWPF.Core.Services;
 using NodeSwitch.Services;
 using NodeSwitch.ViewModels;
 using System;
@@ -27,6 +28,12 @@ namespace NodeSwitch
                 Focus();
                 WindowState = WindowState.Normal; // Ensure the window state is Normal
             });
+            MicaWPFServiceUtility.AccentColorService.UpdateAccentsColors(System.Windows.Media.Color.FromRgb(0x4E, 0x71, 0xFF));
+        }
+
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            
         }
 
         private void Window_StateChanged(object sender, EventArgs e)

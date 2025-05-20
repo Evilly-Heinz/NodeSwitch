@@ -7,7 +7,7 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <mica:ThemeDictionary DesignModeTheme="Dark" Theme="Auto" />
+                <mica:ThemeDictionary DesignModeTheme="Dark" Theme="Dark" />
                 <!-- And Here (You can change to Light, Dark or auto here) -->
                 <!-- <mica:ThemeDictionary />  works too-->
                 <mica:ControlsDictionary />

@@ -14,11 +14,12 @@
     <Grid>
         <Grid Margin="10">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="4*" />
                 <ColumnDefinition Width="5*" />
+                <ColumnDefinition Width="4*" />
             </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
@@ -171,8 +172,15 @@
                      Grid.ColumnSpan="2"
               IsIndeterminate="True"
               Visibility="{Binding IsInstalling, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+            <StackPanel Margin="10" Grid.Row="1" >
+                
+            <controls:ToggleSwitch Content="Start with Windows" 
+                IsChecked="{Binding StartWithWindows, Mode=TwoWay}"
+                Command="{Binding StartupCommand}"
+                CommandParameter="{Binding IsChecked, RelativeSource={RelativeSource Self}}" />
+            </StackPanel>
         </Grid>
-
+        
         <tb:TaskbarIcon x:Name="TrayIcon"
                 IconSource="pack://application:,,,/Resources/nodejs.ico"
                 ToolTipText="WPF NotifyIcon Example"
