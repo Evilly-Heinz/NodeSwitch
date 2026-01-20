@@ -120,11 +120,8 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: MSIX Package
-        # Use forward slashes and globs. This will upload:
-        # - files under the typical AppPackages folder
-        # - any produced *.msix / *.msixbundle / *.appx files anywhere in the workspace
         path: |
-          ${{ env:Wap_Project_Directory }}/AppPackages/**
+          NodeSwitch/AppPackages/**
           **/*.msix
           **/*.msixbundle
           **/*.appx
