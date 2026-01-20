@@ -1,127 +1,123 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+# CI for NodeSwitch: build, test, publish, and optional MSIX packaging
+# - By default this workflow publishes the app (dotnet publish) and uploads the published output.
+# - If you need an MSIX/AppPackages produced, set the job-level env BUILD_MSIX: 'true'
+#   and provide the packaging (.wapproj) via Wap_Project_Path and a Base64 PFX secret + Pfx_Key.
+#
+# Notes:
+# - We avoid using unquoted env expressions inside multiline upload globs (that caused the parser error).
+# - Published outputs are uploaded from artifacts/publish/** (guaranteed by dotnet publish -o).
+# - MSIX upload steps are conditional on BUILD_MSIX == 'true'.
+# - If you enable MSIX packaging, ensure your repo contains a .wapproj or packaging project and that
+#   Wap_Project_Path points at it (relative path). Provide secrets Base64_Encoded_Pfx and Pfx_Key.
 
-# This workflow will build, test, sign and package a WPF or Windows Forms desktop application
-# built on .NET Core.
-# To learn how to migrate your existing application to .NET Core,
-# refer to https://docs.microsoft.com/en-us/dotnet/desktop-wpf/migration/convert-project-from-net-framework
-#
-# To configure this workflow:
-#
-# 1. Configure environment variables
-# GitHub sets default environment variables for every workflow run.
-# Replace the variables relative to your project in the "env" section below.
-#
-# 2. Signing
-# Generate a signing certificate in the Windows Application
-# Packaging Project or add an existing signing certificate to the project.
-# Next, use PowerShell to encode the .pfx file using Base64 encoding
-# by running the following Powershell script to generate the output string:
-#
-# $pfx_cert = Get-Content '.\SigningCertificate.pfx' -Encoding Byte
-# [System.Convert]::ToBase64String($pfx_cert) | Out-File 'SigningCertificate_Encoded.txt'
-#
-# Open the output file, SigningCertificate_Encoded.txt, and copy the
-# string inside. Then, add the string to the repo as a GitHub secret
-# and name it "Base64_Encoded_Pfx."
-# For more information on how to configure your signing certificate for
-# this workflow, refer to https://github.com/microsoft/github-actions-for-desktop-apps#signing
-#
-# Finally, add the signing certificate password to the repo as a secret and name it "Pfx_Key".
-# See "Build the Windows Application Packaging project" below to see how the secret is used.
-#
-# For more information on GitHub Actions, refer to https://github.com/features/actions
-# For a complete CI/CD sample to get started with GitHub Action workflows for Desktop Applications,
-# refer to https://github.com/microsoft/github-actions-for-desktop-apps
-
-name: .NET Core Desktop
+name: .NET Core Desktop (NodeSwitch)
 
 on:
   push:
-    branches: [ "master" ]
+    branches: ["master"]
   pull_request:
-    branches: [ "master" ]
+    branches: ["master"]
 
 jobs:
-
   build:
+    runs-on: windows-latest
 
     strategy:
       matrix:
         configuration: [Debug, Release]
 
-    runs-on: windows-latest
-
+    # Defaults for the job — adjust as needed.
     env:
       Solution_Name: NodeSwitch
       Wap_Project_Directory: NodeSwitch
+      # If you have a packaging project (.wapproj), set Wap_Project_Path to it (example: Packaging/Packaging.wapproj)
       Wap_Project_Path: NodeSwitch\NodeSwitch.csproj
+      # Leave BUILD_MSIX=false unless you actually produce an MSIX/.appx package via a .wapproj build.
+      BUILD_MSIX: 'false'
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Install .NET Core
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: 8.0.x
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
 
-    - name: Setup MSBuild.exe
-      uses: microsoft/setup-msbuild@v2
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
 
-    - name: Execute unit tests
-      run: dotnet test
+      - name: Execute unit tests
+        run: dotnet test --no-build
+        # Note: --no-build assumes subsequent steps build/publish. Remove --no-build if you want tests to also build.
 
-    - name: Restore the application
-      run: msbuild $env:Solution_Name /t:Restore /p:Configuration=$env:Configuration
-      env:
-        Configuration: ${{ matrix.configuration }}
+      - name: Restore solution (MSBuild Restore)
+        run: msbuild $env:Solution_Name /t:Restore /p:Configuration=${{ matrix.configuration }}
+        env:
+          Configuration: ${{ matrix.configuration }}
 
-    - name: Decode the pfx
-      run: |
-        $pfx_cert_byte = [System.Convert]::FromBase64String("${{ secrets.Base64_Encoded_Pfx }}")
-        $certificatePath = Join-Path -Path $env:Wap_Project_Directory -ChildPath GitHubActionsWorkflow.pfx
-        [IO.File]::WriteAllBytes("$certificatePath", $pfx_cert_byte)
+      # Publish the app to a known output folder so we can reliably collect artifacts
+      - name: Publish the app
+        run: |
+          dotnet publish NodeSwitch/NodeSwitch.csproj -c ${{ matrix.configuration }} -r win-x64 --self-contained false -o $GITHUB_WORKSPACE/artifacts/publish/${{ matrix.configuration }}
 
-    - name: Create the app package
-      run: msbuild $env:Wap_Project_Path /p:Configuration=$env:Configuration /p:UapAppxPackageBuildMode=$env:Appx_Package_Build_Mode /p:AppxBundle=$env:Appx_Bundle /p:PackageCertificateKeyFile=GitHubActionsWorkflow.pfx /p:PackageCertificatePassword=${{ secrets.Pfx_Key }}
-      env:
-        Appx_Bundle: Always
-        Appx_Bundle_Platforms: x86|x64
-        Appx_Package_Build_Mode: StoreUpload
-        Configuration: ${{ matrix.configuration }}
+      # Optional MSIX packaging steps (only run if BUILD_MSIX == 'true')
+      - name: Decode the pfx (for MSIX signing)
+        if: env.BUILD_MSIX == 'true'
+        run: |
+          if (-not ${{ secrets.Base64_Encoded_Pfx }}) { Write-Host 'Warning: Base64_Encoded_Pfx secret is empty or not set'; exit 1 }
+          $pfx_cert_byte = [System.Convert]::FromBase64String("${{ secrets.Base64_Encoded_Pfx }}")
+          $certificatePath = Join-Path -Path $env:Wap_Project_Directory -ChildPath GitHubActionsWorkflow.pfx
+          [IO.File]::WriteAllBytes("$certificatePath", $pfx_cert_byte)
 
-    - name: Remove the pfx
-      run: Remove-Item -path $env:Wap_Project_Directory\GitHubActionsWorkflow.pfx
+      - name: Create the app package (MSIX)
+        if: env.BUILD_MSIX == 'true'
+        run: msbuild $env:Wap_Project_Path /p:Configuration=${{ matrix.configuration }} /p:UapAppxPackageBuildMode=$env:Appx_Package_Build_Mode /p:AppxBundle=$env:Appx_Bundle /p:PackageCertificateKeyFile=GitHubActionsWorkflow.pfx /p:PackageCertificatePassword=${{ secrets.Pfx_Key }}
+        env:
+          Appx_Bundle: Always
+          Appx_Bundle_Platforms: x86|x64
+          Appx_Package_Build_Mode: StoreUpload
+          Configuration: ${{ matrix.configuration }}
 
-    # Debugging: list outputs under the packaging project and the workspace so we can see where files landed
-    - name: Show package output (project)
-      run: |
-        Write-Host "Listing contents of $env:Wap_Project_Directory (recursive):"
-        if (Test-Path $env:Wap_Project_Directory) {
-          Get-ChildItem -Path $env:Wap_Project_Directory -Recurse -Force | ForEach-Object { Write-Host $_.FullName }
-        } else {
-          Write-Host "$env:Wap_Project_Directory does not exist"
-        }
+      - name: Remove the pfx (cleanup)
+        if: env.BUILD_MSIX == 'true'
+        run: Remove-Item -Path $env:Wap_Project_Directory\GitHubActionsWorkflow.pfx -ErrorAction SilentlyContinue
 
-    - name: Show package output (workspace)
-      run: |
-        Write-Host "Listing any MSIX / APPX files in the workspace:"
-        Get-ChildItem -Path $GITHUB_WORKSPACE -Include *.msix,*.msixbundle,*.appx -Recurse -Force | ForEach-Object { Write-Host $_.FullName }
-        Write-Host "Listing all directories named 'AppPackages' in the workspace:"
-        Get-ChildItem -Path $GITHUB_WORKSPACE -Recurse -Directory -Force -Filter AppPackages | ForEach-Object { Write-Host $_.FullName }
+      # Debugging: show what was produced inside the project folder and workspace (helps find artifacts)
+      - name: Show project output (recursive)
+        run: |
+          Write-Host "Listing contents of $env:Wap_Project_Directory (recursive):"
+          if (Test-Path $env:Wap_Project_Directory) {
+            Get-ChildItem -Path $env:Wap_Project_Directory -Recurse -Force | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host "$env:Wap_Project_Directory does not exist"
+          }
 
-    # Upload artifacts with glob fallback — this will catch AppPackages/** and any MSIX/APPX files
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: MSIX Package
-        path: |
-          NodeSwitch/AppPackages/**
-          **/*.msix
-          **/*.msixbundle
-          **/*.appx
+      - name: Show MSIX / APPX files & AppPackages directories in workspace
+        run: |
+          Write-Host "Listing any MSIX / APPX files in the workspace:"
+          Get-ChildItem -Path $GITHUB_WORKSPACE -Include *.msix,*.msixbundle,*.appx -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Write-Host "Listing all directories named 'AppPackages' in the workspace:"
+          Get-ChildItem -Path $GITHUB_WORKSPACE -Recurse -Directory -Force -Filter AppPackages -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+
+      # Upload the published app (always)
+      - name: Upload published artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Published App
+          path: artifacts/publish/**
+
+      # Upload MSIX/AppPackages artifacts only if BUILD_MSIX enabled.
+      # We quote the expression lines to avoid the YAML expression parsing issue that produced "Unexpected symbol".
+      - name: Upload MSIX / AppPackages (if any)
+        if: env.BUILD_MSIX == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MSIX Package
+          path: |
+            "${{ env.Wap_Project_Directory }}/AppPackages/**"
+            "**/*.msix"
+            "**/*.msixbundle"
+            "**/*.appx"
