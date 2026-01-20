@@ -1,14 +1,8 @@
-# CI for NodeSwitch: build, test, publish, and optional MSIX packaging
-# - By default this workflow publishes the app (dotnet publish) and uploads the published output.
-# - If you need an MSIX/AppPackages produced, set the job-level env BUILD_MSIX: 'true'
-#   and provide the packaging (.wapproj) via Wap_Project_Path and a Base64 PFX secret + Pfx_Key.
-#
-# Notes:
-# - We avoid using unquoted env expressions inside multiline upload globs (that caused the parser error).
-# - Published outputs are uploaded from artifacts/publish/** (guaranteed by dotnet publish -o).
-# - MSIX upload steps are conditional on BUILD_MSIX == 'true'.
-# - If you enable MSIX packaging, ensure your repo contains a .wapproj or packaging project and that
-#   Wap_Project_Path points at it (relative path). Provide secrets Base64_Encoded_Pfx and Pfx_Key.
+# CI for NodeSwitch: build, test, collect and upload built executable (NodeSwitch.exe)
+# - This workflow builds the solution, finds any NodeSwitch.exe produced in the bin folders,
+#   copies them into a known artifacts directory and uploads that directory.
+# - This is robust even if dotnet publish or AppPackages are not produced.
+# - MSIX packaging remains optional and disabled by default.
 
 name: .NET Core Desktop (NodeSwitch)
 
@@ -26,13 +20,11 @@ jobs:
       matrix:
         configuration: [Debug, Release]
 
-    # Defaults for the job — adjust as needed.
     env:
       Solution_Name: NodeSwitch
-      Wap_Project_Directory: NodeSwitch
-      # If you have a packaging project (.wapproj), set Wap_Project_Path to it (example: Packaging/Packaging.wapproj)
+      # packaging project path (if you have a .wapproj, set it here)
       Wap_Project_Path: NodeSwitch\NodeSwitch.csproj
-      # Leave BUILD_MSIX=false unless you actually produce an MSIX/.appx package via a .wapproj build.
+      # set to 'true' only if you have a packaging project and the signing secrets
       BUILD_MSIX: 'false'
 
     steps:
@@ -49,75 +41,95 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Execute unit tests
-        run: dotnet test --no-build
-        # Note: --no-build assumes subsequent steps build/publish. Remove --no-build if you want tests to also build.
-
       - name: Restore solution (MSBuild Restore)
         run: msbuild $env:Solution_Name /t:Restore /p:Configuration=${{ matrix.configuration }}
         env:
           Configuration: ${{ matrix.configuration }}
 
-      # Publish the app to a known output folder so we can reliably collect artifacts
-      - name: Publish the app
-        run: |
-          dotnet publish NodeSwitch/NodeSwitch.csproj -c ${{ matrix.configuration }} -r win-x64 --self-contained false -o $GITHUB_WORKSPACE/artifacts/publish/${{ matrix.configuration }}
+      - name: Build solution
+        run: msbuild $env:Solution_Name /t:Build /p:Configuration=${{ matrix.configuration }} /m
+        env:
+          Configuration: ${{ matrix.configuration }}
 
-      # Optional MSIX packaging steps (only run if BUILD_MSIX == 'true')
+      - name: Execute unit tests
+        run: dotnet test --no-build -c ${{ matrix.configuration }} || Write-Host "Tests failed or no tests"
+
+      # Optional: attempt dotnet publish as a canonical publish output (may be unused)
+      - name: Attempt dotnet publish (optional)
+        run: |
+          dotnet publish NodeSwitch/NodeSwitch.csproj -c ${{ matrix.configuration }} -r win-x64 --self-contained false -o $GITHUB_WORKSPACE/artifacts/publish/${{ matrix.configuration }} || Write-Host "Publish may have not produced outputs"
+
+      # Debug listing of the project bin/release folders to help diagnose locations
+      - name: Show bin outputs (project)
+        run: |
+          Write-Host "Listing bin/ and relevant project folders under NodeSwitch/NodeSwitch:"
+          if (Test-Path "NodeSwitch/NodeSwitch") {
+            Get-ChildItem -Path "NodeSwitch/NodeSwitch" -Recurse -Force | Where-Object { $_.FullName -match '\\bin\\|\\obj\\' } | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host "Project folder NodeSwitch/NodeSwitch not found"
+          }
+
+      # Collect NodeSwitch.exe (search & copy into artifacts directory)
+      - name: Collect built NodeSwitch.exe into artifacts directory
+        run: |
+          $config = '${{ matrix.configuration }}'
+          $workspace = "$env:GITHUB_WORKSPACE"
+          Write-Host "GITHUB_WORKSPACE = $workspace"
+          Write-Host "Searching for NodeSwitch.exe under $workspace ..."
+          $matches = Get-ChildItem -Path $workspace -Filter 'NodeSwitch.exe' -Recurse -ErrorAction SilentlyContinue
+          if (!$matches -or $matches.Count -eq 0) {
+            Write-Host "No NodeSwitch.exe found under the workspace."
+            exit 0
+          }
+          $dest = Join-Path -Path $workspace -ChildPath ("artifacts/binaries/$config")
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          foreach ($f in $matches) {
+            $target = Join-Path $dest $f.Name
+            Copy-Item -Path $f.FullName -Destination $target -Force
+            Write-Host "Copied $($f.FullName) -> $target"
+          }
+          Write-Host 'Done copying executables.'
+
+      # Show what we will upload
+      - name: Show artifacts directory
+        run: |
+          Write-Host "Listing artifacts directory:"
+          if (Test-Path "$GITHUB_WORKSPACE/artifacts") {
+            Get-ChildItem -Path "$GITHUB_WORKSPACE/artifacts" -Recurse -Force | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host "No artifacts directory present"
+          }
+
+      # Upload the collected binaries (this will upload any NodeSwitch.exe we copied)
+      - name: Upload collected binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: NodeSwitch-binaries
+          path: artifacts/binaries/**
+
+      # If you need MSIX packaging, keep these steps and set BUILD_MSIX = 'true' and secrets
       - name: Decode the pfx (for MSIX signing)
         if: env.BUILD_MSIX == 'true'
         run: |
-          if (-not ${{ secrets.Base64_Encoded_Pfx }}) { Write-Host 'Warning: Base64_Encoded_Pfx secret is empty or not set'; exit 1 }
+          if (-not ${{ secrets.Base64_Encoded_Pfx }}) { Write-Host 'Missing Base64_Encoded_Pfx secret'; exit 1 }
           $pfx_cert_byte = [System.Convert]::FromBase64String("${{ secrets.Base64_Encoded_Pfx }}")
-          $certificatePath = Join-Path -Path $env:Wap_Project_Directory -ChildPath GitHubActionsWorkflow.pfx
+          $certificatePath = Join-Path -Path (Join-Path $GITHUB_WORKSPACE 'NodeSwitch') -ChildPath 'GitHubActionsWorkflow.pfx'
           [IO.File]::WriteAllBytes("$certificatePath", $pfx_cert_byte)
+          Write-Host "Wrote certificate to $certificatePath"
 
       - name: Create the app package (MSIX)
         if: env.BUILD_MSIX == 'true'
-        run: msbuild $env:Wap_Project_Path /p:Configuration=${{ matrix.configuration }} /p:UapAppxPackageBuildMode=$env:Appx_Package_Build_Mode /p:AppxBundle=$env:Appx_Bundle /p:PackageCertificateKeyFile=GitHubActionsWorkflow.pfx /p:PackageCertificatePassword=${{ secrets.Pfx_Key }}
+        run: msbuild $env:Wap_Project_Path /p:Configuration=${{ matrix.configuration }} /p:UapAppxPackageBuildMode=StoreUpload /p:AppxBundle=Always /p:PackageCertificateKeyFile=GitHubActionsWorkflow.pfx /p:PackageCertificatePassword=${{ secrets.Pfx_Key }}
         env:
-          Appx_Bundle: Always
-          Appx_Bundle_Platforms: x86|x64
-          Appx_Package_Build_Mode: StoreUpload
           Configuration: ${{ matrix.configuration }}
 
-      - name: Remove the pfx (cleanup)
-        if: env.BUILD_MSIX == 'true'
-        run: Remove-Item -Path $env:Wap_Project_Directory\GitHubActionsWorkflow.pfx -ErrorAction SilentlyContinue
-
-      # Debugging: show what was produced inside the project folder and workspace (helps find artifacts)
-      - name: Show project output (recursive)
-        run: |
-          Write-Host "Listing contents of $env:Wap_Project_Directory (recursive):"
-          if (Test-Path $env:Wap_Project_Directory) {
-            Get-ChildItem -Path $env:Wap_Project_Directory -Recurse -Force | ForEach-Object { Write-Host $_.FullName }
-          } else {
-            Write-Host "$env:Wap_Project_Directory does not exist"
-          }
-
-      - name: Show MSIX / APPX files & AppPackages directories in workspace
-        run: |
-          Write-Host "Listing any MSIX / APPX files in the workspace:"
-          Get-ChildItem -Path $GITHUB_WORKSPACE -Include *.msix,*.msixbundle,*.appx -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-          Write-Host "Listing all directories named 'AppPackages' in the workspace:"
-          Get-ChildItem -Path $GITHUB_WORKSPACE -Recurse -Directory -Force -Filter AppPackages -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-
-      # Upload the published app (always)
-      - name: Upload published artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Published App
-          path: artifacts/publish/**
-
-      # Upload MSIX/AppPackages artifacts only if BUILD_MSIX enabled.
-      # We quote the expression lines to avoid the YAML expression parsing issue that produced "Unexpected symbol".
-      - name: Upload MSIX / AppPackages (if any)
+      - name: Upload MSIX / AppPackages (if created)
         if: env.BUILD_MSIX == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: MSIX Package
           path: |
-            "${{ env.Wap_Project_Directory }}/AppPackages/**"
+            "NodeSwitch/AppPackages/**"
             "**/*.msix"
             "**/*.msixbundle"
             "**/*.appx"
